@@ -52,7 +52,8 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'smart_lock_project.wsgi'
+WSGI_APPLICATION = 'smart_lock_project.wsgi.application'
+ASGI_APPLICATION = 'smart_lock_project.asgi.application'
 
 DATABASES = {
     'default': {
