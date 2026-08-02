@@ -34,16 +34,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 1. Initialize Webcam & Microphone Stream
     async function initMediaDevices() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            let errorMsg = 'Tu navegador no permite acceso a la cámara/micrófono en este contexto.';
+            if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+                errorMsg += '\n\n⚠️ MOTIVO: Los navegadores bloquean la cámara/micrófono en conexiones HTTP no seguras.' +
+                    '\n\nPara solucionar esto:' +
+                    '\n1. Accede desde Debian usando http://localhost:8000' +
+                    '\n2. O habilita en Chrome del cliente: chrome://flags/#unsafely-treat-insecure-origin-as-secure e incluye http://' + window.location.host;
+            }
+            console.error('[PTTController]', errorMsg);
+            alert(errorMsg);
+            return;
+        }
+
         try {
+            // Try ideal HD resolution first
             mediaStream = await navigator.mediaDevices.getUserMedia({
                 video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
                 audio: true
             });
             webcamVideo.srcObject = mediaStream;
             console.log('[PTTController] Video and Audio streams initialized successfully.');
-        } catch (err) {
-            console.error('[PTTController] Error accessing webcam/microphone:', err);
-            alert('No se pudo acceder a la cámara o al micrófono. Asegúrate de otorgar permisos.');
+        } catch (primaryErr) {
+            console.warn('[PTTController] High-res constraints failed, falling back to default constraints:', primaryErr);
+            try {
+                // Fallback to basic video & audio constraints
+                mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                webcamVideo.srcObject = mediaStream;
+                console.log('[PTTController] Basic video & audio stream initialized.');
+            } catch (err) {
+                console.error('[PTTController] Error accessing webcam/microphone:', err);
+                let msg = 'No se pudo acceder a la cámara o al micrófono.\n';
+                if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                    msg += 'Debes otorgar permisos de Cámara y Micrófono en el navegador.';
+                } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+                    msg += 'No se detectó ninguna cámara o micrófono físico conectado.';
+                } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+                    msg += 'La cámara o micrófono está siendo usado por otra aplicación (ej: Zoom, Meet, u otra pestaña).';
+                } else {
+                    msg += `Detalle: ${err.message || err.name}`;
+                }
+                alert(msg);
+            }
         }
     }
 
