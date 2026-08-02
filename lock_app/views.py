@@ -6,7 +6,7 @@ from django.views.decorators.csrf import ensure_csrf_cookie, csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .models import UserProfile
-from .serial_controller import send_unlock_command
+from .serial_controller import send_unlock_command, check_esp32_connection
 from .ai_services import (
     extract_facial_embedding,
     calculate_cosine_similarity,
@@ -18,39 +18,108 @@ logger = logging.getLogger(__name__)
 
 FACE_SIMILARITY_THRESHOLD = 0.40  # Cosine similarity threshold for InsightFace
 
-@ensure_csrf_cookie
-def index(request):
-    """
-    Main View: Renders the Biometric Smart Lock frontend dashboard.
-    Ensures default demo user exists if DB is clean.
-    """
-    # Ensure at least one demo user exists for seamless testing
-    if not UserProfile.objects.exists():
-        UserProfile.objects.create(
-            name="Usuario Demostración",
-            secret_phrase="abrete sesamo",
-            facial_embedding=[0.05] * 512,  # Dummy sample vector
-            is_active=True
-        )
-        logger.info("[Views] Created default demo user: 'Usuario Demostración' with passphrase 'abrete sesamo'")
 
+@ensure_csrf_cookie
+def home_view(request):
+    """
+    Vista 1: Hub / Página Principal del Sistema de Cerradura Biométrica.
+    Ofrece la navegación entre el módulo de registro de usuarios y el módulo de desbloqueo.
+    """
+    user_count = UserProfile.objects.filter(is_active=True).count()
+    serial_info = check_esp32_connection()
+    context = {
+        'user_count': user_count,
+        'serial_info': serial_info,
+    }
+    return render(request, 'lock_app/home.html', context)
+
+
+@ensure_csrf_cookie
+def register_view(request):
+    """
+    Vista 2: Módulo de Registro Biométrico de Usuarios.
+    Permite capturar Nombre, Frase Secreta, Rostro (Webcam) y Muestra de Voz (Micrófono).
+    """
+    serial_info = check_esp32_connection()
+    return render(request, 'lock_app/register.html', {'serial_info': serial_info})
+
+
+@ensure_csrf_cookie
+def unlock_view(request):
+    """
+    Vista 3: Módulo de Operación / Desbloqueo Biométrico 3-FA (Push-To-Talk).
+    Permite a un usuario autenticarse mediante Rostro + Frase + Voz para activar la cerradura ESP32.
+    """
     users = UserProfile.objects.filter(is_active=True)
-    return render(request, 'lock_app/index.html', {'users': users})
+    serial_info = check_esp32_connection()
+    context = {
+        'users': users,
+        'user_count': users.count(),
+        'serial_info': serial_info,
+    }
+    return render(request, 'lock_app/unlock.html', context)
+
+
+def serial_status_api(request):
+    """
+    API endpoint para consultar en tiempo real si el ESP32 está físicamente conectado.
+    """
+    status = check_esp32_connection()
+    return JsonResponse(status)
+
+
+@require_http_methods(["POST"])
+def register_user(request):
+    """
+    API endpoint de registro: Procesa el formulario con Nombre, Frase Secreta,
+    Imagen (Rostro para InsightFace) y Audio (Muestra de voz).
+    """
+    try:
+        name = request.POST.get('name', '').strip()
+        secret_phrase = request.POST.get('secret_phrase', '').strip()
+        image_file = request.FILES.get('image')
+        audio_file = request.FILES.get('audio')
+
+        if not name or not secret_phrase or not image_file:
+            return JsonResponse({
+                'success': False,
+                'message': 'Por favor complete todos los campos obligatorios (Nombre, Frase Secreta y Captura de Rostro).'
+            }, status=400)
+
+        image_bytes = image_file.read()
+        face_detected, embedding, msg = extract_facial_embedding(image_bytes)
+
+        if not face_detected or embedding is None:
+            return JsonResponse({
+                'success': False,
+                'message': f"No se pudo extraer la huella facial: {msg}"
+            }, status=400)
+
+        user = UserProfile(name=name, secret_phrase=secret_phrase)
+        user.set_facial_embedding(embedding)
+
+        if audio_file:
+            user.voice_sample = audio_file
+
+        user.save()
+        logger.info(f"[Views] Nuevo usuario biométrico registrado: '{user.name}' con ID {user.id}")
+
+        return JsonResponse({
+            'success': True,
+            'message': f"¡Usuario '{user.name}' registrado exitosamente con biometría facial y vocal!",
+            'user_id': user.id
+        })
+
+    except Exception as e:
+        logger.exception("[Views] Error registrando usuario")
+        return JsonResponse({'success': False, 'message': f"Error en servidor: {str(e)}"}, status=500)
 
 
 @require_http_methods(["POST"])
 def authenticate_user(request):
     """
-    Core Pipeline View: Receives image + audio from Push-to-Talk frontend,
-    executes 3-Factor Biometric Verification & triggers ESP32 serial unlock.
-    
-    Pipeline Steps:
-    Paso 1: Recibir la foto y el audio desde multipart POST.
-    Paso 2: Extraer el rostro (InsightFace) y buscar coincidencias en la BD de usuarios.
-    Paso 3: Si hay coincidencia facial, procesar audio con Faster-Whisper (STT).
-    Paso 4: Verificar si el texto transcrito coincide con la "Frase secreta" del usuario.
-    Paso 5: Si el texto coincide, procesar audio con SpeechBrain (Speaker Verification).
-    Paso 6: Si las 3 validaciones son exitosas, enviar b'OPEN\n' a ESP32 vía PySerial.
+    API endpoint de autenticación 3-FA:
+    Recibe Foto + Audio y ejecuta la verificación secuencial contra usuarios registrados.
     """
     pipeline_result = {
         'success': False,
@@ -64,15 +133,19 @@ def authenticate_user(request):
     }
 
     try:
-        # ==========================================
-        # PASO 1: Recibir la foto y el audio
-        # ==========================================
+        # Check if database has users
+        active_users = UserProfile.objects.filter(is_active=True)
+        if not active_users.exists():
+            pipeline_result['message'] = "Acceso Denegado: No hay usuarios registrados en el sistema. Registre un usuario primero."
+            return JsonResponse(pipeline_result, status=200)
+
+        # Paso 1: Recibir Multimedia
         image_file = request.FILES.get('image')
         audio_file = request.FILES.get('audio')
 
         if not image_file or not audio_file:
             pipeline_result['step1_reception']['details'] = "Falta la captura de imagen o la grabación de audio."
-            pipeline_result['message'] = "Paso 1 fallido: Archivos multimedia no recibidos correctamente."
+            pipeline_result['message'] = "Paso 1 fallido: Archivos multimedia no recibidos."
             return JsonResponse(pipeline_result, status=400)
 
         image_bytes = image_file.read()
@@ -80,21 +153,17 @@ def authenticate_user(request):
 
         pipeline_result['step1_reception'] = {
             'success': True,
-            'details': f"Imagen ({len(image_bytes)} bytes) y Audio ({len(audio_bytes)} bytes) recibidos."
+            'details': f"Imagen ({len(image_bytes)} B) y Audio ({len(audio_bytes)} B) recibidos."
         }
-        logger.info("[Pipeline] Paso 1 Completado: Multimedia recibida exitosamente.")
 
-        # ==========================================
-        # PASO 2: Extraer rostro (InsightFace) y buscar en BD
-        # ==========================================
+        # Paso 2: Extraer Rostro (InsightFace) y buscar coincidencias en la BD real
         face_detected, current_embedding, face_msg = extract_facial_embedding(image_bytes)
-        
+
         if not face_detected or current_embedding is None:
             pipeline_result['step2_facial']['details'] = f"Reconocimiento Facial Fallido: {face_msg}"
-            pipeline_result['message'] = "Acceso Denegado - Paso 2: No se detectó rostro válido."
+            pipeline_result['message'] = "Acceso Denegado - Paso 2: No se detectó un rostro válido."
             return JsonResponse(pipeline_result, status=200)
 
-        active_users = UserProfile.objects.filter(is_active=True)
         matched_user = None
         best_similarity = -1.0
 
@@ -107,32 +176,23 @@ def authenticate_user(request):
                     if sim >= FACE_SIMILARITY_THRESHOLD:
                         matched_user = user
 
-        # Si no hay embeddings cargados previamente en BD (primer uso), asociamos al primer usuario activo para testing
-        if matched_user is None and active_users.exists():
-            matched_user = active_users.first()
-            best_similarity = 0.95
-            logger.info(f"[Pipeline] Asignado usuario de pruebas '{matched_user.name}' para flujo de demostración.")
-
         if matched_user is None:
             pipeline_result['step2_facial'] = {
                 'success': False,
                 'score': float(best_similarity),
-                'details': f"Rostro no registrado en la base de datos (Similitud: {best_similarity:.2f})."
+                'details': f"Rostro no coincide con ningún usuario registrado (Similitud max: {best_similarity:.2f})."
             }
-            pipeline_result['message'] = "Acceso Denegado - Paso 2: Rostro no coincide con ningún usuario autorizado."
+            pipeline_result['message'] = "Acceso Denegado - Paso 2: Rostro no registrado."
             return JsonResponse(pipeline_result, status=200)
 
         pipeline_result['step2_facial'] = {
             'success': True,
             'matched_user': matched_user.name,
             'score': round(float(best_similarity), 3),
-            'details': f"Rostro identificado: '{matched_user.name}' (Similitud: {best_similarity:.2f})."
+            'details': f"Usuario identificado: '{matched_user.name}' (Similitud: {best_similarity:.2f})."
         }
-        logger.info(f"[Pipeline] Paso 2 Completado: Rostro identificado como '{matched_user.name}'.")
 
-        # ==========================================
-        # PASO 3: Procesar Audio con Faster-Whisper (STT)
-        # ==========================================
+        # Paso 3: Transcribir Audio con Faster-Whisper
         transcribed_text = transcribe_audio_whisper(audio_bytes)
         expected_phrase = matched_user.secret_phrase.strip().lower()
         clean_transcription = transcribed_text.strip().lower()
@@ -141,24 +201,20 @@ def authenticate_user(request):
             'success': True if clean_transcription else False,
             'transcribed_text': transcribed_text,
             'expected_phrase': matched_user.secret_phrase,
-            'details': f"Texto reconocido por Whisper: '{transcribed_text}'"
+            'details': f"Texto STT: '{transcribed_text}'"
         }
 
-        # ==========================================
-        # PASO 4: Verificar coincidencia de Frase Clave
-        # ==========================================
-        # Normalización básica de cadenas
+        # Paso 4: Coincidencia de Frase Clave
         import re
         norm_transcription = re.sub(r'[^\w\s]', '', clean_transcription)
         norm_expected = re.sub(r'[^\w\s]', '', expected_phrase)
 
-        # Coincidencia flexible si la frase esperable está contenida o hay alta similitud
-        phrase_matches = (norm_expected in norm_transcription) or (norm_transcription in norm_expected) or (clean_transcription == "")
+        phrase_matches = (norm_expected in norm_transcription) or (norm_transcription in norm_expected)
 
         if not phrase_matches:
             pipeline_result['step4_phrase_match'] = {
                 'success': False,
-                'details': f"La frase esperada ('{matched_user.secret_phrase}') no coincide con el audio reconocido ('{transcribed_text}')."
+                'details': f"La frase esperada ('{matched_user.secret_phrase}') no coincide con lo dicho ('{transcribed_text}')."
             }
             pipeline_result['message'] = f"Acceso Denegado - Paso 4: Frase clave incorrecta para {matched_user.name}."
             return JsonResponse(pipeline_result, status=200)
@@ -167,11 +223,8 @@ def authenticate_user(request):
             'success': True,
             'details': f"Frase secreta verificada correctamente ('{matched_user.secret_phrase}')."
         }
-        logger.info(f"[Pipeline] Paso 3 & 4 Completados: Frase clave validada para '{matched_user.name}'.")
 
-        # ==========================================
-        # PASO 5: Verificación de Locutor / Biometría Vocal (SpeechBrain)
-        # ==========================================
+        # Paso 5: Biometría Vocal (SpeechBrain)
         voice_ref_path = matched_user.voice_sample.path if matched_user.voice_sample else None
         voice_vec = matched_user.get_voice_embedding()
 
@@ -191,11 +244,7 @@ def authenticate_user(request):
             pipeline_result['message'] = f"Acceso Denegado - Paso 5: Biometría vocal no coincide para {matched_user.name}."
             return JsonResponse(pipeline_result, status=200)
 
-        logger.info(f"[Pipeline] Paso 5 Completado: Biometría vocal verificada (Score: {voice_score:.2f}).")
-
-        # ==========================================
-        # PASO 6: Apertura Física - Enviar comando b'OPEN\n' a ESP32 vía Serial
-        # ==========================================
+        # Paso 6: Apertura Física ESP32
         serial_result = send_unlock_command(command=b'OPEN\n')
         
         pipeline_result['step6_esp32_unlock'] = {
@@ -206,42 +255,9 @@ def authenticate_user(request):
 
         pipeline_result['success'] = True
         pipeline_result['message'] = f"¡AUTENTICACIÓN EXITOSA! Bienvenido {matched_user.name}. Cerradura Desbloqueada."
-        logger.info(f"[Pipeline] ¡EXITO TOTAL! Apertura enviada al ESP32 para {matched_user.name}.")
-
         return JsonResponse(pipeline_result, status=200)
 
     except Exception as e:
-        logger.exception("[Pipeline] Excepción catastrófica en el proceso de autenticación")
-        pipeline_result['message'] = f"Error interno en el servidor: {str(e)}"
+        logger.exception("[Pipeline] Excepción en autenticación")
+        pipeline_result['message'] = f"Error interno del servidor: {str(e)}"
         return JsonResponse(pipeline_result, status=500)
-
-
-@require_http_methods(["POST"])
-def register_user(request):
-    """
-    Utility API endpoint to register a new user profile with facial embedding and secret phrase.
-    """
-    try:
-        name = request.POST.get('name')
-        secret_phrase = request.POST.get('secret_phrase')
-        image_file = request.FILES.get('image')
-
-        if not name or not secret_phrase or not image_file:
-            return JsonResponse({'success': False, 'message': 'Faltan campos obligatorios (nombre, frase, imagen).'}, status=400)
-
-        image_bytes = image_file.read()
-        face_detected, embedding, msg = extract_facial_embedding(image_bytes)
-
-        user = UserProfile(name=name, secret_phrase=secret_phrase)
-        if face_detected and embedding is not None:
-            user.set_facial_embedding(embedding)
-        
-        user.save()
-        return JsonResponse({
-            'success': True, 
-            'message': f"Usuario '{user.name}' registrado exitosamente.",
-            'user_id': user.id,
-            'face_detected': face_detected
-        })
-    except Exception as e:
-        return JsonResponse({'success': False, 'message': str(e)}, status=500)

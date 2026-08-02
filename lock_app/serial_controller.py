@@ -20,17 +20,44 @@ def detect_esp32_port():
     """
     ports = [p.device for p in serial.tools.list_ports.comports()]
     if ports:
-        logger.info(f"[SerialController] Found available serial ports: {ports}")
         return ports[0]
     
-    # Fallback to standard Debian USB serial nodes
+    # Fallback check for active candidate ports
     for candidate in CANDIDATE_PORTS:
         try:
             with serial.Serial(candidate):
                 return candidate
         except Exception:
             continue
-    return '/dev/ttyUSB0'
+    return None
+
+
+def check_esp32_connection(port=None):
+    """
+    Checks if a real ESP32 hardware device is physically connected and accessible.
+    Returns dict: {'connected': bool, 'port': str, 'message': str}
+    """
+    target_port = port or detect_esp32_port()
+    if not target_port:
+        return {
+            'connected': False,
+            'port': None,
+            'message': 'ESP32 DESCONECTADO (Sin puerto serial detectado)'
+        }
+    
+    try:
+        with serial.Serial(target_port, baudrate=115200, timeout=0.5):
+            return {
+                'connected': True,
+                'port': target_port,
+                'message': f'ESP32 CONECTADO en {target_port}'
+            }
+    except Exception as e:
+        return {
+            'connected': False,
+            'port': target_port,
+            'message': f'ESP32 DESCONECTADO en {target_port} ({str(e)})'
+        }
 
 
 def send_unlock_command(command=b'OPEN\n', port=None, baudrate=115200, timeout=2.0):
