@@ -11,15 +11,15 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch('/api/serial-status/');
             const data = await response.json();
-            
+
             if (data.connected) {
                 badge.className = 'system-status-badge connected';
-                badgeText.textContent = `ESP32 CONECTADO (${data.port})`;
+                badgeText.textContent = `ESP32 - CONECTADO (${data.port})`;
                 badge.title = data.message;
             } else {
                 badge.className = 'system-status-badge disconnected';
-                badgeText.textContent = `ESP32 DESCONECTADO`;
-                badge.title = data.message || 'Sin conexión serial';
+                badgeText.textContent = `ESP32 - DESCONECTADO`;
+                badge.title = data.message;
                 console.warn('[HeaderStatus] Serial check detail:', data.message);
             }
         } catch (err) {

@@ -7,56 +7,25 @@ or cross-platform USB serial ports.
 import logging
 import time
 import serial
-import serial.tools.list_ports
 
 logger = logging.getLogger(__name__)
 
-# Preferred Linux serial device paths for ESP32
-CANDIDATE_PORTS = ['/dev/ttyUSB0', '/dev/ttyACM0', '/dev/ttyUSB1', '/dev/ttyACM1', 'COM3', 'COM4']
-
-def detect_esp32_port():
+def check_esp32_connection(port='/dev/ttyUSB0'):
     """
-    Scans system for connected USB serial ports or returns default candidates.
+    Checks if ESP32 hardware device is physically connected and accessible.
     """
-    ports = [p.device for p in serial.tools.list_ports.comports()]
-    if ports:
-        return ports[0]
-    
-    # Fallback check for active candidate ports
-    for candidate in CANDIDATE_PORTS:
-        try:
-            with serial.Serial(candidate):
-                return candidate
-        except Exception:
-            continue
-    return None
-
-
-def check_esp32_connection(port=None):
-    """
-    Checks if a real ESP32 hardware device is physically connected and accessible.
-    Returns dict: {'connected': bool, 'port': str, 'message': str}
-    """
-    target_port = port or detect_esp32_port()
-    if not target_port:
-        return {
-            'connected': False,
-            'port': None,
-            'message': 'ESP32 DESCONECTADO (Sin puerto serial detectado)'
-        }
-    
     try:
-        with serial.Serial(target_port, baudrate=115200, timeout=0.5):
+        with serial.Serial(port, baudrate=115200, timeout=0.5):
             return {
                 'connected': True,
-                'port': target_port,
-                'message': f'ESP32 CONECTADO en {target_port}'
+                'port': port,
+                'message': f'ESP32 CONECTADO en {port}'
             }
     except Exception as e:
         return {
             'connected': False,
-            'port': target_port,
-            'message': f'ESP32 DESCONECTADO en {target_port} ({str(e)})'
+            'port': port,
+            'message': f'ESP32 DESCONECTADO ({str(e)})'
         }
 
 
