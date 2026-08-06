@@ -32,6 +32,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     updateSerialStatus();
-    // Poll every 6 seconds
-    setInterval(updateSerialStatus, 6000);
+    // Poll every 2 seconds
+    setInterval(updateSerialStatus, 2000);
 });
