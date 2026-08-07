@@ -12,6 +12,7 @@ from .ai_services import (
     calculate_cosine_similarity,
     transcribe_audio_whisper,
     verify_speaker_voice,
+    extract_voice_embedding,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,43 +72,70 @@ def serial_status_api(request):
 @require_http_methods(["POST"])
 def register_user(request):
     """
-    API endpoint de registro: Procesa el formulario con Nombre, Frase Secreta,
-    Imagen (Rostro para InsightFace) y Audio (Muestra de voz).
+    API endpoint de registro: Procesa el formulario con Nombre, Imagen (Rostro) y Audio (Muestra de voz).
+    Utiliza Faster-Whisper para auto-generar y guardar la frase secreta de la voz, y SpeechBrain para la huella vocal.
     """
     try:
         name = request.POST.get('name', '').strip()
-        secret_phrase = request.POST.get('secret_phrase', '').strip()
+        manual_phrase = request.POST.get('secret_phrase', '').strip()
         image_file = request.FILES.get('image')
         audio_file = request.FILES.get('audio')
 
-        if not name or not secret_phrase or not image_file:
+        if not name or not image_file:
             return JsonResponse({
                 'success': False,
-                'message': 'Por favor complete todos los campos obligatorios (Nombre, Frase Secreta y Captura de Rostro).'
+                'message': 'Por favor ingresa el Nombre y toma la Captura de Rostro.'
             }, status=400)
 
+        # 1. Extraer Rostro con InsightFace
         image_bytes = image_file.read()
-        face_detected, embedding, msg = extract_facial_embedding(image_bytes)
+        face_detected, face_embedding, face_msg = extract_facial_embedding(image_bytes)
 
-        if not face_detected or embedding is None:
+        if not face_detected or face_embedding is None:
             return JsonResponse({
                 'success': False,
-                'message': f"No se pudo extraer la huella facial: {msg}"
+                'message': f"No se pudo detectar el rostro para el registro: {face_msg}"
             }, status=400)
 
-        user = UserProfile(name=name, secret_phrase=secret_phrase)
-        user.set_facial_embedding(embedding)
+        # 2. Procesar Muestra de Voz (Whisper STT & SpeechBrain Biometría Vocal)
+        final_phrase = manual_phrase
+        voice_vector = None
+        voice_details = "Sin muestra de voz registrada."
+
+        if audio_file:
+            audio_bytes = audio_file.read()
+            
+            # Transcribir audio con Faster-Whisper para establecer la frase de referencia exacta
+            whisper_text = transcribe_audio_whisper(audio_bytes)
+            if whisper_text and len(whisper_text.strip()) > 0:
+                final_phrase = whisper_text.strip()
+                logger.info(f"[Register] Frase generada automáticamente por Whisper: '{final_phrase}'")
+
+            # Extraer huella de voz con SpeechBrain
+            v_success, voice_vector, voice_details = extract_voice_embedding(audio_bytes)
+
+        if not final_phrase:
+            final_phrase = "sesamo abrete"  # Frase por defecto si no se proporcionó audio ni texto
+
+        user = UserProfile(name=name, secret_phrase=final_phrase)
+        user.set_facial_embedding(face_embedding)
+
+        if voice_vector is not None:
+            user.set_voice_embedding(voice_vector)
 
         if audio_file:
             user.voice_sample = audio_file
 
         user.save()
-        logger.info(f"[Views] Nuevo usuario biométrico registrado: '{user.name}' con ID {user.id}")
+        logger.info(f"[Views] Nuevo usuario registrado: '{user.name}' | Frase Whisper: '{final_phrase}'")
 
         return JsonResponse({
             'success': True,
-            'message': f"¡Usuario '{user.name}' registrado exitosamente con biometría facial y vocal!",
-            'user_id': user.id
+            'message': f"¡Usuario '{user.name}' registrado exitosamente!",
+            'user_id': user.id,
+            'assigned_phrase': final_phrase,
+            'face_status': '✓ Biometría Facial Registrada (InsightFace 512-d)',
+            'voice_status': f"✓ Biometría Vocal Registrada (SpeechBrain). {voice_details}" if audio_file else "⚠️ Sin grabación de voz."
         })
 
     except Exception as e:

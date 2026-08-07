@@ -113,8 +113,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const name = document.getElementById('name-input').value.trim();
         const secretPhrase = document.getElementById('phrase-input').value.trim();
 
-        if (!name || !secretPhrase) {
-            alert('Por favor ingresa el nombre y la frase secreta.');
+        if (!name) {
+            alert('Por favor ingresa el Nombre del usuario.');
             return;
         }
 
@@ -135,7 +135,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         regResponseMsg.style.display = 'block';
         regResponseMsg.className = 'lock-state-banner';
-        regResponseMsg.textContent = 'Procesando modelo InsightFace en CPU y guardando en base de datos...';
+        regResponseMsg.innerHTML = '⏳ Procesando modelos de IA en CPU...<br><span style="font-size: 0.82rem; color: var(--text-muted);">1. InsightFace (Vector 512-d) &bull; 2. Faster-Whisper (STT Frase) &bull; 3. SpeechBrain (ECAPA-TDNN)</span>';
 
         try {
             const response = await fetch('/api/register/', {
@@ -149,14 +149,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (data.success) {
                 regResponseMsg.className = 'lock-state-banner unlocked';
-                regResponseMsg.innerHTML = `<strong>${data.message}</strong><br><br><a href="/unlock/" style="color: var(--accent-neon); text-decoration: underline;">Ir a Operar la Cerradura &rarr;</a>`;
+                regResponseMsg.innerHTML = `
+                    <strong style="font-size: 1.1rem; color: var(--accent-neon);">${data.message}</strong>
+                    <div style="text-align: left; background: rgba(0,0,0,0.3); padding: 0.8rem; border-radius: 8px; margin-top: 0.8rem; font-size: 0.85rem; line-height: 1.6;">
+                        📌 <strong>Frase Asignada (Whisper):</strong> <em style="color: var(--accent-cyan);">"${data.assigned_phrase}"</em><br>
+                        👤 <strong>Biometría Facial:</strong> ${data.face_status}<br>
+                        🎙️ <strong>Biometría Vocal:</strong> ${data.voice_status}
+                    </div>
+                    <div style="margin-top: 1rem;">
+                        <a href="/unlock/" class="cyber-btn cyber-btn-cyan" style="font-size: 0.85rem; padding: 0.5rem 1rem;">Ir a Operar la Cerradura &rarr;</a>
+                    </div>
+                `;
                 regForm.reset();
                 capturedFaceBlob = null;
                 capturedVoiceBlob = null;
                 faceStatus.textContent = 'No Capturado';
                 faceStatus.style.background = 'rgba(255,255,255,0.05)';
                 faceStatus.style.color = 'var(--text-muted)';
-                voiceStatus.textContent = 'No Grabada';
+                voiceStatus.textContent = 'Opcional / No Grabada';
+                voiceStatus.style.color = 'var(--text-muted)';
                 audioPreview.style.display = 'none';
             } else {
                 regResponseMsg.className = 'lock-state-banner denied';
@@ -165,7 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (err) {
             console.error('[RegController] Submit error:', err);
             regResponseMsg.className = 'lock-state-banner denied';
-            regResponseMsg.textContent = 'Error de conexión con el servidor Django.';
+            regResponseMsg.textContent = 'Error de conexión con el servidor Django: ' + err.message;
         }
     });
 });
