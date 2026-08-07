@@ -14,11 +14,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (data.connected) {
                 badge.className = 'system-status-badge connected';
-                badgeText.textContent = `ESP32 - CONECTADO (${data.port})`;
+                badgeText.textContent = `ESP32 CONECTADO`;
                 badge.title = data.message;
             } else {
                 badge.className = 'system-status-badge disconnected';
-                badgeText.textContent = `ESP32 - DESCONECTADO`;
+                badgeText.textContent = `ESP32 DESCONECTADO`;
                 badge.title = data.message;
                 console.warn('[HeaderStatus] Serial check detail:', data.message);
             }
